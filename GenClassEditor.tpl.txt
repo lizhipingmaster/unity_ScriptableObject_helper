@@ -1,0 +1,286 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Xml.Serialization;
+#if UNITY_EDITOR
+using UnityEditor;
+using UnityEditorInternal;
+#endif
+using UnityEngine;
+
+// ClassName是单行配置的类名
+// Fields是public字段，不包括父类
+// ListFields是list型字段
+// Attri={字段名={属性名=Attribute}}
+// MenuName菜单名
+// Label
+<%require "TemplateCommon"%>
+
+<%
+table.indexof = function(tbl, val)
+	local index = false
+	ForEachCsList(tbl, function(_val, i)
+		if _val == val then index = i end
+	end)
+end
+
+string.startwith = function(str, sub)
+    return string.find(str, sub, 1, true) == 1
+end
+%>
+
+[System.Serializable]
+class Multi<%=ClassName%> : ScriptableObject
+{
+    [MenuItem("Assets/Create/<%=MenuName%>")]
+    public static void CreateAsset()
+    {
+        var instance = ScriptableObject.CreateInstance<Multi<%=ClassName%>>();
+        AssetDatabase.CreateAsset(instance, "Assets/Editor/Config/Multi<%=ClassName%>.asset");
+        AssetDatabase.SaveAssets();
+    }
+	
+	public <%=ClassName%> CopyLast()
+    {
+        if (list.Count <= 0) return new <%=ClassName%>();
+
+        XmlSerializer xml = new XmlSerializer(typeof(<%=ClassName%>));
+        using (MemoryStream ms = new MemoryStream())
+        {
+            xml.Serialize(ms, list[list.Count-1]);
+            ms.Position = default;
+            return (<%=ClassName%>)xml.Deserialize(ms);
+        }
+    }
+    public List<<%=ClassName%>> list;
+}
+
+[CustomEditor(typeof(Multi<%=ClassName%>))]
+public class Multi<%=ClassName%>Editor : Editor
+{
+    ReorderableList dataList = null;
+    int RowHeight = 18;
+    
+    public void OnEnable()
+    {
+        var data = ((Multi<%=ClassName%>)target).list;
+        dataList = new ReorderableList(data, data.GetType());
+        dataList.drawElementCallback = OnDrawItemListElement;
+        dataList.onAddCallback = OnAddCallback;
+        dataList.elementHeight = 0;
+        dataList.elementHeightCallback = HeightCallback;
+        dataList.drawHeaderCallback = DrawItemListHeaderCallback;
+    }
+
+    void OnDrawItemListElement(Rect rect, int index, bool isActive, bool isFocused)
+    {
+		string header = "";
+		int enumVal = 0;
+		rect.height = RowHeight;
+        var one = ((Multi<%=ClassName%>)target).list[index];
+        var pre = one.collapse;
+        var rt = rect;
+        rt.width = 16;
+        if ((one.collapse = EditorGUI.Toggle(rt, one.collapse)) != pre)
+        {
+            dataList.DoLayoutList();
+            return;
+        }
+
+		<%
+		local commentField = ''
+		ForEachCsList(Fields, function(field)
+		ForEachCsList(field.CustomAttributes, function(attr)
+		if attr.AttributeType.Name == 'ScriptableObjectCommentAttribute' then
+			commentField = field.Name
+		end
+		end)
+		end)%>
+		
+        <%local first = true%>
+        <%ForEachCsList(Fields, function(field)%>
+		<%if first then
+		first = false
+		%>
+		rt.width = rect.width - 16;
+		rt.x += 16;
+		if (one.collapse)
+			EditorGUI.TextField(rt, "说明", one.<%=commentField%> + $"({one.<%=field.Name%>})");
+		else
+			one.<%=field.Name%> = EditorGUI.IntField(rt, "标识Id", one.<%=field.Name%>);
+
+		if (one.collapse)
+			return ;
+		<%else%>
+		
+		<%local GetFieldAttr = function(field, name)
+			local ret = nil
+			ForEachCsList(field.CustomAttributes or {}, function(attr)
+				local attribute = Attri[field.Name][attr.AttributeType.Name]
+				if attr.AttributeType.Name == name then
+					ret = attribute
+				end
+			end)
+			return ret or {}--[[ or {label = {[0] = field.Name}}]]
+		end
+		
+		local Type2Method = {['String'] = 'TextField', ['Int32'] = 'IntField', ['Boolean'] = 'Toggle', ['Single'] = 'FloatField', ['Vector2'] = 'Vector2Field', ['Vector3'] = 'Vector3Field', ['Vector4'] = 'Vector4Field'}
+		%>
+		
+		<%
+		-- String Int32 List`1 Vector2/3/4
+		-- 如果是数组
+		if (string.startwith(field.FieldType.Name, 'List')) then 
+		local typeName = string.match(field.FieldType.FullName, '%[%[[^ ]*%.(%w+)')
+		
+		local label = GetFieldAttr(field, 'ScriptableObjectNameAttribute').label or {[0] = field.Name, Length = 1}
+		if label.Length > 1 then%>
+		switch (enumVal)
+        {
+		<%for _i = 0, label.Length-1 do
+		%>
+            case <%=_i%>:                header = "<%=label[_i]%>"; break;
+		<%end%>
+            default:header = "undefine";
+                break;
+        }
+		<%else%>
+		header = "<%=label[0]%>";
+		<%end%>
+		for (int i = 0; i < one.<%=field.Name%>.Count; ++i)
+        {
+			rect.position = rect.position + new Vector2(0, RowHeight);
+			one.<%=field.Name%>[i] = EditorGUI.<%=Type2Method[typeName]%>(rect, header, one.<%=field.Name%>[i]);
+			
+			<%local range = GetFieldAttr(field, 'ScriptableObjectRangeAttribute')
+			if range.min and (typeName == 'Int32' or typeName == 'Single') then%>
+			one.<%=field.Name%>[i] = (<%=typeName%>)Math.Max(one.<%=field.Name%>[i], <%=range.min%>);
+			one.<%=field.Name%>[i] = (<%=typeName%>)Math.Min(one.<%=field.Name%>[i], <%=range.max%>);
+			<%end%>
+		}
+		rect.position = rect.position + new Vector2(0, RowHeight);
+        rt = rect;
+        rt.width /= 16;
+		rt.x += rect.width * 7 / 8;
+        if (EditorGUI.DropdownButton(rt, new GUIContent("+"), FocusType.Passive))
+        {
+			<%if typeName == 'Int32' or typeName == 'Single' then%>
+			one.<%=field.Name%>.Add(0);
+			<%elseif typeName == 'String' then%>
+			one.<%=field.Name%>.Add("");
+			<%elseif typeName == 'Boolean' then%>
+			one.<%=field.Name%>.Add(false);
+			<%else%>
+			one.<%=field.Name%>.Add(<%=typeName%>.zero);
+			<%end%>
+            dataList.DoLayoutList();
+        }
+        rt.x += rect.width / 16;
+        if (EditorGUI.DropdownButton(rt, new GUIContent("-"), FocusType.Passive) && one.<%=field.Name%>.Count > 0)
+        {
+			one.<%=field.Name%>.RemoveAt(one.<%=field.Name%>.Count - 1);
+            dataList.DoLayoutList();
+        }
+		<%else
+		-- enum
+		if Type2Method[field.FieldType.Name] == nil then
+			Type2Method[field.FieldType.Name] = 'Popup'
+		end
+		%>
+		
+		rect.position = rect.position + new Vector2(0, RowHeight);
+		<%local label = GetFieldAttr(field, 'ScriptableObjectNameAttribute').label or {[0] = field.Name, Length = 1}
+		if label.Length > 1 then%>
+		switch (enumVal)
+        {
+		<%for _i = 0, label.Length-1 do
+		%>
+            case <%=_i%>:                header = "<%=label[_i]%>"; break;
+		<%end%>
+            default:header = "undefine";
+                break;
+        }
+		<%else%>
+		header = "<%=label[0]%>";
+		<%end%>
+		<%
+		-- 是否是枚举类型
+		local vals = GetFieldAttr(field, 'ScriptableObjectEnumAttribute').vals
+		if vals ~= nil then
+		local temp = {}
+		for _i = 0, vals.Length-1 do
+			table.insert(temp, '"' .. vals[_i] .. '"')
+		end
+		%>
+		one.<%=field.Name%> = EditorGUI.Popup(rect, header, one.<%=field.Name%>, new string[]{<%=table.concat(temp, ',')%>});
+		enumVal = one.<%=field.Name%>;
+		<%else%>
+		one.<%=field.Name%> = EditorGUI.<%=Type2Method[field.FieldType.Name]%>(rect, header, one.<%=field.Name%>);
+		<%
+		local range = GetFieldAttr(field, 'ScriptableObjectRangeAttribute')
+		if range.min and (field.FieldType.Name == 'Int32' or field.FieldType.Name == 'Single') then%>
+		one.<%=field.Name%> = (<%=field.FieldType.Name%>)Math.Max(one.<%=field.Name%>, <%=range.min%>);
+		one.<%=field.Name%> = (<%=field.FieldType.Name%>)Math.Min(one.<%=field.Name%>, <%=range.max%>);
+		<%end
+		end end end end)%>
+    }
+
+    void OnAddCallback(ReorderableList list)
+    {
+        var l = (Multi<%=ClassName%>)target;
+        //l.Add(new <%=ClassName%>() { id = l.Count>0?l.Last().id+1:1});
+        //l.Add(l.Count > 0 ? l.Last().copyOne() : new <%=ClassName%>() { id = 1 });
+		l.list.Add(l.CopyLast());
+    }
+
+    float HeightCallback(int index)
+    {
+        var one = ((Multi<%=ClassName%>)target).list[index];
+        int elementCount = typeof(<%=ClassName%>).GetFields().Count() - 1/*collapse共用一行*/;
+		<%ForEachCsList(ListFields, function(field)%>
+		elementCount += one.<%=field.Name%>.Count;
+		<%end)%>
+
+        if (one.collapse)
+            elementCount = 1;
+
+        return elementCount * RowHeight;
+    }
+
+    void DrawItemListHeaderCallback(Rect rect)
+    {
+        EditorGUI.LabelField(rect, "<%=Label%>");
+    }
+
+    public override void OnInspectorGUI()
+    {
+        var data = ((Multi<%=ClassName%>)target).list;
+        dataList?.DoLayoutList();
+
+        serializedObject.ApplyModifiedProperties();
+        /*if (GUI.changed)
+        {
+            using (FileStream f = new FileStream(Application.dataPath + "/Res/Lua/Excel/novice_guide.lua.txt", FileMode.Create))
+            {
+                using (StreamWriter sw = new StreamWriter(f))
+                {
+                    sw.WriteLine("local True, False = true, false\nexcel_novice_guide = {");
+                    foreach (var kv in data)
+                    {
+                        sw.WriteLine($"[{kv.id}] = {{\n{Log.Script2Lua(kv)}}},");
+                    }
+                    sw.Write(@"}
+for k, v in pairs(excel_novice_guide) do
+	if v.event_id == 11 then
+		excel_novice_guide[tonumber(v.progress_id)].next_step = k
+	end
+end");
+                }
+            }
+                
+            EditorUtility.SetDirty(target);
+        }*/
+    }
+
+}
